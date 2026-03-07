@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 import requests
+from az_scout.azure_api._auth import AZURE_MGMT_URL, _get_headers
 
 from az_scout_avs_sku._log import logger
 
@@ -19,6 +20,7 @@ AZURE_PRICES_BASE_URL = "https://prices.azure.com/api/retail/prices"
 REQUEST_TIMEOUT_SECONDS = 20
 CACHE_TTL = timedelta(minutes=30)
 PAYG_MONTH_HOURS = 730
+CONSUMPTION_API_VERSION = "2023-05-01"
 PRICE_MODES = (
     "payg_hour",
     "payg_month",
@@ -41,7 +43,7 @@ GENERATION2_AV64_REGIONS = {
 }
 
 _sku_cache: tuple[datetime, list[dict[str, Any]]] | None = None
-_prices_cache: dict[tuple[str, bool], tuple[datetime, dict[str, dict[str, Any]]]] = {}
+_prices_cache: dict[tuple[str, bool, str, str], tuple[datetime, dict[str, dict[str, Any]]]] = {}
 
 
 def _http_get_json(url: str) -> dict[str, Any] | list[Any]:
@@ -141,13 +143,117 @@ def _fetch_regional_price_items(region: str) -> list[dict[str, Any]]:
     return items
 
 
-def _build_price_index(region: str, byol: bool) -> dict[str, dict[str, Any]]:
-    cache_key = (region, byol)
+def _fetch_subscription_price_sheet(
+    subscription_id: str,
+) -> dict[str, float]:
+    """Fetch AVS meter prices from the Consumption Price Sheet API.
+
+    Uses az-scout's ``_get_headers`` to obtain a Bearer token for the
+    connected identity.  Returns a mapping of ``meterId`` (lowercase) to
+    ``unitPrice`` for AVS-related meters only.
+    """
+    headers = _get_headers()
+    url: str | None = (
+        f"{AZURE_MGMT_URL}/subscriptions/{subscription_id}"
+        f"/providers/Microsoft.Consumption/pricesheets/default"
+        f"?api-version={CONSUMPTION_API_VERSION}"
+    )
+    meter_prices: dict[str, float] = {}
+
+    while url:
+        resp = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT_SECONDS)
+        if resp.status_code == 404:
+            msg = (
+                f"Subscription price sheet not available for subscription "
+                f"'{subscription_id}'. This API requires an Enterprise Agreement (EA) "
+                f"or Microsoft Customer Agreement (MCA) billing account."
+            )
+            raise ValueError(msg)
+        resp.raise_for_status()
+        data = resp.json()
+        properties = data.get("properties", {})
+        pricesheets = properties.get("pricesheets", [])
+
+        for item in pricesheets:
+            if not isinstance(item, dict):
+                continue
+            category = str(item.get("meterCategory", "")).lower()
+            subcategory = str(item.get("meterSubCategory", "")).lower()
+            if "specialized compute" not in category:
+                continue
+            if "azure vmware solution" not in subcategory:
+                continue
+
+            meter_id = str(item.get("meterId", "")).lower()
+            unit_price = item.get("unitPrice")
+            if meter_id and isinstance(unit_price, (int, float)):
+                meter_prices[meter_id] = float(unit_price)
+
+        url = properties.get("nextLink")
+
+    logger.info(
+        "Fetched %d AVS meter prices from subscription price sheet for sub=%s",
+        len(meter_prices),
+        subscription_id,
+    )
+    return meter_prices
+
+
+def _apply_subscription_prices(
+    items: list[dict[str, Any]],
+    subscription_id: str,
+) -> list[dict[str, Any]]:
+    """Override retail prices with subscription-specific prices.
+
+    Fetches the subscription's Consumption Price Sheet using az-scout's
+    authentication helpers and replaces ``retailPrice`` for matching
+    meter IDs.  Raises on any failure so callers get an explicit error
+    instead of silently falling back to public prices.
+    """
+    meter_prices = _fetch_subscription_price_sheet(subscription_id)
+
+    if not meter_prices:
+        msg = (
+            f"No AVS meters found in the subscription price sheet "
+            f"for subscription '{subscription_id}'. "
+            f"Ensure the subscription has Azure VMware Solution pricing."
+        )
+        raise ValueError(msg)
+
+    applied = 0
+    result: list[dict[str, Any]] = []
+    for item in items:
+        meter_id = str(item.get("meterId", "")).lower()
+        if meter_id in meter_prices:
+            item = {**item, "retailPrice": meter_prices[meter_id]}
+            applied += 1
+        result.append(item)
+
+    logger.info(
+        "Applied %d subscription prices (of %d total items) for sub=%s",
+        applied,
+        len(items),
+        subscription_id,
+    )
+    return result
+
+
+def _build_price_index(
+    region: str,
+    byol: bool,
+    pricing_source: str = "public",
+    subscription_id: str = "",
+) -> dict[str, dict[str, Any]]:
+    cache_key = (region, byol, pricing_source, subscription_id)
     cached = _prices_cache.get(cache_key)
     if cached and _is_cache_fresh(cached[0]):
         return cached[1]
 
     items = _fetch_regional_price_items(region)
+
+    if pricing_source == "subscription" and subscription_id:
+        items = _apply_subscription_prices(items, subscription_id)
+
     prices_by_sku: dict[str, dict[str, Any]] = {}
 
     def get_or_create_price_entry(sku_code: str) -> dict[str, Any]:
@@ -249,7 +355,12 @@ def get_avs_skus_for_region(
     normalized_subscription_id = (subscription_id or "").strip()
     technical_skus = get_avs_sku_technical_data()
     if normalized_region:
-        price_index = _build_price_index(region=normalized_region, byol=byol)
+        price_index = _build_price_index(
+            region=normalized_region,
+            byol=byol,
+            pricing_source=normalized_pricing_source,
+            subscription_id=normalized_subscription_id,
+        )
     else:
         price_index = {}
 

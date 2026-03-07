@@ -301,8 +301,12 @@
             byolToggle.disabled = true;
             pricingScopeSelect.disabled = true;
             hideLegend();
-            statusEl.textContent =
-                `Loading AVS SKUs for ${ctx.regionName} (${pricingSource}, ${byol ? "BYOL" : "No BYOL"}, ${selectedModeLabel})…`;
+            statusEl.textContent = "";
+            cardsEl.innerHTML =
+                `<div class="alert alert-info fade show" role="alert" style="grid-column: 1 / -1;">` +
+                `<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>` +
+                `Loading AVS SKUs for ${ctx.regionName} (${pricingSource}, ${byol ? "BYOL" : "No BYOL"}, ${selectedModeLabel})…` +
+                `</div>`;
 
             try {
                 const qs = new URLSearchParams({
@@ -318,12 +322,16 @@
                 rerenderCurrentItems();
                 const activeCount = countActiveSkus(currentItems, priceModeSelect.value);
                 statusEl.textContent =
-                    `${activeCount} SKU are available in ${ctx.regionName} (${pricingSource}, ${selectedModeLabel}).`;
+                    `${activeCount} SKU ${activeCount === 1 ? "is" : "are"} available in ${ctx.regionName} (${pricingSource}, ${selectedModeLabel}).`;
                 showLegend();
             } catch (e) {
                 currentItems = [];
-                cardsEl.innerHTML = "";
-                statusEl.textContent = "Error: " + e.message;
+                cardsEl.innerHTML =
+                    `<div class="alert alert-danger alert-dismissible fade show" role="alert" style="grid-column: 1 / -1;">` +
+                    `<strong>Error:</strong> ${e.message}` +
+                    `<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>` +
+                    `</div>`;
+                statusEl.textContent = "";
                 hideLegend();
             } finally {
                 byolToggle.disabled = false;
@@ -347,7 +355,7 @@
             rerenderCurrentItems();
             const activeCount = countActiveSkus(currentItems, priceModeSelect.value);
             statusEl.textContent =
-                `Showing ${activeCount} SKU card(s) for ${ctx.regionName} (${pricingSource}, ${selectedModeLabel}).`;
+                `Showing ${activeCount} SKU ${activeCount === 1 ? "card" : "cards"} for ${ctx.regionName} (${pricingSource}, ${selectedModeLabel}).`;
         });
 
         hideLegend();

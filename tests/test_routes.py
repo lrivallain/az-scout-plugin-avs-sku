@@ -57,5 +57,20 @@ def test_skus_route_wraps_upstream_errors() -> None:
 
     assert response.status_code == 502
     body = response.json()
-    assert "Failed to load AVS SKU data" in body["detail"]
-    assert "eastus" in body["detail"]
+    assert "Failed to load AVS SKU data" in body["error"]
+    assert "eastus" in body["error"]
+    assert body["detail"] == body["error"]
+
+
+def test_skus_route_returns_422_for_value_errors() -> None:
+    with patch(
+        "az_scout_avs_sku.routes.get_avs_skus_for_region",
+        side_effect=ValueError("No AVS meters found"),
+    ):
+        client = _build_client()
+        response = client.get("/plugins/avs-sku/skus", params={"region": "eastus"})
+
+    assert response.status_code == 422
+    body = response.json()
+    assert "No AVS meters found" in body["error"]
+    assert body["detail"] == body["error"]
