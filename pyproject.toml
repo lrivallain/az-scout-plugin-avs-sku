@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "az-scout-plugin-avs-sku"
 dynamic = ["version"]
-description = "Example plugin for az-scout"
+description = "Azure VMware Solution (AVS) SKU exploration plugin for az-scout"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
