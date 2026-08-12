@@ -190,13 +190,13 @@ def _fetch_subscription_price_sheet(
     while url:
         try:
             data = arm_get(url, timeout=REQUEST_TIMEOUT_SECONDS)
-        except ArmNotFoundError:
+        except ArmNotFoundError as exc:
             msg = (
                 f"Subscription price sheet not available for subscription "
                 f"'{subscription_id}'. This API requires an Enterprise Agreement (EA) "
                 f"or Microsoft Customer Agreement (MCA) billing account."
             )
-            raise ValueError(msg)  # noqa: B904
+            raise ValueError(msg) from exc
         properties = data.get("properties", {})
         pricesheets = properties.get("pricesheets", [])
 
